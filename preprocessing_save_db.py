@@ -19,11 +19,64 @@ files = os.listdir("/Users/hongbikim/Dev/dacon_finance/docs")
 
 ##############################################################################
 chunk_size=512
+model_name = "nlpai-lab/KURE-v1"
 ##############################################################################
 
+# Qdrant 클라이언트 설정
+hf_embeddings = HuggingFaceEndpointEmbeddings(
+    model=model_name,
+    task="feature-extraction",
+    huggingfacehub_api_token=os.environ["HUGGINGFACEHUB_API_TOKEN"],
+)
+
+
+client = QdrantClient(
+    url=os.environ["QDRANT_URL"],
+    api_key=os.environ["QDRANT_api_key"],
+)
+
+
+def reset_collection(collection_name="rag-finance"):
+    """컬렉션 초기화"""
+    try:
+        # 기존 컬렉션 삭제
+        client.delete_collection(collection_name)
+        print(f"✅ 컬렉션 '{collection_name}' 삭제 완료")
+    except Exception as e:
+        print(f"⚠️  컬렉션 삭제 중 오류: {e}")
+    
+    # 임베딩 차원 확인
+    sample_embedding = hf_embeddings.embed_query("test")
+    embedding_dim = len(sample_embedding)
+    
+    # 새 컬렉션 생성
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(
+            size=embedding_dim,
+            distance=Distance.COSINE
+        )
+    )
+    print(f"✅ 새 컬렉션 '{collection_name}' 생성 완료")
+    
+    # 새 벡터스토어 반환
+    return QdrantVectorStore(
+        client=client,
+        collection_name=collection_name,
+        embedding=hf_embeddings
+    )
+
+vector_store = reset_collection()
+
+collection_info = client.get_collection("rag-finance")
+print(f"포인터 개수: {collection_info.points_count}")
+print(f"컬렉션 상태: {collection_info.status}")
+
+# 텍스트 전처리 함수
 def clean_text(text):
     text = text.replace("&lt", "").replace("&amp", "&").replace("&quot", '"').replace("&apos", "'").replace("&nbsp", " ").replace("&gt;", ">").replace("&gt", ">").replace("&lt;", "<").replace("&lt", "<").replace("&#39;", "'").replace("&#39", "'").replace("&#34;", '"').replace("&#34", '"').replace("&gt;", ">").replace("&gt", ">").replace("&lt;", "<").replace("&lt", "<").replace("&nbsp;", " ").replace("&nbsp", " ").replace("&amp;", "&").replace("&amp", "&").replace("&quot;", '"').replace("&quot", '"').replace("&apos;", "'").replace("&apos", "'").replace("&#39;", "'").replace("&#39", "'").replace("&#34;", '"').replace("&#34", '"')
     text = re.sub(r"\s{2,}", " ", text)
+    # text = re.sub(r".{2,}", ".", text)
     new_text = []
     for t in text.split("\n"):
         if "삭제" not in t:
@@ -136,11 +189,11 @@ def _merge_short_chunks(splits, page_num, min_length=200):
     return merged_splits
 
 all_splits = []
-
-for file in files:
+error_files = []
+for idx, file in enumerate(files):
     if file.endswith(".pdf") ==  False:
         continue
-    FILE_PATH = "/Users/hongbikim/Dev/dacon_finance/docs/" + file
+    FILE_PATH = "/Users/hongbikim/Dev/dacon_finance/docs_none/" + file
     file_id = uuid.uuid4().hex
 
     # PyMuPDF 로더 인스턴스 생성
@@ -183,109 +236,15 @@ for file in files:
         
         # 짧은 청크들 합치기
         merged_splits = _merge_short_chunks(temp_splits, page_num)
+        try:
+            print(f"[{idx}/{len(files)}]")
+            vector_store.add_documents(documents=merged_splits)
+        except Exception as e:
+            print(f"Error adding documents for file {i}th {file}: {e}")
+            error_files.append(file)
+            continue
         all_splits.extend(merged_splits)
 
 print(len(files))
 print(len(all_splits))
-
-
-
-model_name = "nlpai-lab/KURE-v1"
-
-hf_embeddings = HuggingFaceEndpointEmbeddings(
-    model=model_name,
-    task="feature-extraction",
-    huggingfacehub_api_token=os.environ["HUGGINGFACEHUB_API_TOKEN"],
-)
-
-
-client = QdrantClient(
-    host="localhost",
-    port=6333,
-    # path = "/Users/hongbikim/Dev/dacon_finance"
-)
-
-# # 1. 먼저 컬렉션 생성 (임베딩 차원에 맞춰서)
-# collection_name = "rag-finance"
-
-# # 임베딩 차원 확인 (hf_embeddings의 차원)
-# sample_embedding = hf_embeddings.embed_query("test")
-# embedding_dim = len(sample_embedding)
-# print(f"임베딩 차원: {embedding_dim}")
-
-# # 컬렉션 생성
-# client.create_collection(
-#     collection_name=collection_name,
-#     vectors_config=VectorParams(
-#         size=embedding_dim,  # 임베딩 차원
-#         distance=Distance.COSINE  # 거리 측정 방식
-#     )
-# )
-
-# # Qdrant 벡터 저장소 객체 생성
-# vector_store = QdrantVectorStore(
-#     client = client,
-#     collection_name = "rag-finance",
-#     embedding = hf_embeddings
-# )
-
-
-def reset_collection(collection_name="rag-finance"):
-    """컬렉션 초기화"""
-    try:
-        # 기존 컬렉션 삭제
-        client.delete_collection(collection_name)
-        print(f"✅ 컬렉션 '{collection_name}' 삭제 완료")
-    except Exception as e:
-        print(f"⚠️  컬렉션 삭제 중 오류: {e}")
-    
-    # 임베딩 차원 확인
-    sample_embedding = hf_embeddings.embed_query("test")
-    embedding_dim = len(sample_embedding)
-    
-    # 새 컬렉션 생성
-    client.create_collection(
-        collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=embedding_dim,
-            distance=Distance.COSINE
-        )
-    )
-    print(f"✅ 새 컬렉션 '{collection_name}' 생성 완료")
-    
-    # 새 벡터스토어 반환
-    return QdrantVectorStore(
-        client=client,
-        collection_name=collection_name,
-        embedding=hf_embeddings
-    )
-
-# # 사용법
-vector_store = reset_collection()
-
-vector_store.add_documents(documents=all_splits)
-
-collection_info = client.get_collection("rag-finance")
-print(f"포인터 개수: {collection_info.points_count}")
-print(f"컬렉션 상태: {collection_info.status}")
-
-
-test = pd.read_csv("/Users/hongbikim/Dev/dacon_finance/open/test.csv")
-
-query = test['Question'][0].split("\n")[0]
-
-
-results = vector_store.similarity_search(
-    query = query,
-    k = 10,
-    # filter = models.Filter(must=[models.FieldCondition(
-    #     key = "metadata.page", # 특정 필드(예: page) 기반 필터링
-    #     match = models.MatchValue(value=2), # page 1인 문서만 검색
-    # )])
-)
-
-print(query)
-ctxs = []
-for result in results:
-    ctxs.append(result.page_content)
 
